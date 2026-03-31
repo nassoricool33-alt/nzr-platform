@@ -1,84 +1,75 @@
 const https = require('https');
 
 module.exports = async function handler(req, res) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  if (!deepseekKey) {
-    return res.status(500).json({ error: 'DEEPSEEK_API_KEY not configured' });
-  }
+  const key = process.env.DEEPSEEK_API_KEY;
+  if (!key) return res.status(500).json({ error: 'DEEPSEEK_API_KEY missing in Vercel env vars' });
 
   try {
-    const { messages } = req.body;
+    const body = req.body;
+    const messages = body && body.messages ? body.messages : [];
+
+    if (messages.length === 0) {
+      return res.status(400).json({ error: 'No messages provided' });
+    }
 
     const payload = JSON.stringify({
       model: 'deepseek-chat',
       max_tokens: 900,
-      messages: messages,
+      messages: messages
     });
 
-    const response = await new Promise((resolve, reject) => {
+    const result = await new Promise((resolve, reject) => {
       const options = {
         hostname: 'api.deepseek.com',
         path: '/chat/completions',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${deepseekKey}`,
+          'Authorization': 'Bearer ' + key,
           'Content-Length': Buffer.byteLength(payload)
         }
       };
 
-      const apiReq = https.request(options, (apiRes) => {
+      const r = https.request(options, (res2) => {
         let data = '';
-        apiRes.on('data', chunk => data += chunk);
-        apiRes.on('end', () => resolve({ status: apiRes.statusCode, body: data }));
+        res2.on('data', c => data += c);
+        res2.on('end', () => resolve({ status: res2.statusCode, body: data }));
       });
 
-      apiReq.on('error', reject);
-      apiReq.write(payload);
-      apiReq.end();
+      r.on('error', reject);
+      r.write(payload);
+      r.end();
     });
 
-    const data = JSON.parse(response.body);
+    let parsed;
+    try {
+      parsed = JSON.parse(result.body);
+    } catch(e) {
+      return res.status(500).json({ error: 'DeepSeek response parse error: ' + result.body.slice(0, 100) });
+    }
 
-    if (response.status !== 200) {
-      return res.status(response.status).json({
-        error: `DeepSeek error: ${data.error?.message || response.status}`
+    if (result.status !== 200) {
+      return res.status(result.status).json({
+        error: 'DeepSeek error: ' + (parsed.error?.message || result.status)
       });
     }
 
-    const text = data.choices?.[0]?.message?.content || '';
+    const text = (parsed.choices && parsed.choices[0] && parsed.choices[0].message)
+      ? parsed.choices[0].message.content
+      : '';
+
     return res.status(200).json({
-      content: [{ type: 'text', text }]
+      content: [{ type: 'text', text: text }]
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Handler error: ' + err.message });
   }
 };
-```
-
-Click **Commit changes**.
-
----
-
-## Then Redeploy
-
-Vercel → **Deployments** → **"..."** → **Redeploy** → wait 30 seconds → test again:
-```
-https://nzr-platform.vercel.app/api/quote?symbol=AAPL
