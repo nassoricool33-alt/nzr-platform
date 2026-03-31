@@ -1,4 +1,6 @@
-export default async function handler(req, res) {
+const https = require('https');
+
+module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -15,64 +17,52 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  const finnhubKey = process.env.FINNHUB_API_KEY;
 
   if (!deepseekKey) {
-    return res.status(500).json({ error: 'DEEPSEEK_API_KEY not configured in Vercel environment variables.' });
+    return res.status(500).json({ error: 'DEEPSEEK_API_KEY not configured' });
   }
 
   try {
-    const { messages, ticker } = req.body;
+    const { messages } = req.body;
 
-    // Fetch live price from Finnhub if we have the key and ticker
-    let priceContext = '';
-    if (ticker && finnhubKey) {
-      try {
-        const quoteRes = await fetch(
-          `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${finnhubKey}`
-        );
-        const quote = await quoteRes.json();
-        if (quote && quote.c) {
-          const chg = ((quote.c - quote.pc) / quote.pc * 100).toFixed(2);
-          priceContext = `\n\nLIVE MARKET DATA - use these exact figures:\nCurrent Price: $${quote.c}\nOpen: $${quote.o}\nHigh: $${quote.h}\nLow: $${quote.l}\nPrev Close: $${quote.pc}\nChange: ${chg}%\nBase ALL entry zones, targets, and stops on current price $${quote.c}.`;
+    const payload = JSON.stringify({
+      model: 'deepseek-chat',
+      max_tokens: 900,
+      messages: messages,
+    });
+
+    const response = await new Promise((resolve, reject) => {
+      const options = {
+        hostname: 'api.deepseek.com',
+        path: '/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${deepseekKey}`,
+          'Content-Length': Buffer.byteLength(payload)
         }
-      } catch (e) {
-        // continue without live price
-      }
-    }
+      };
 
-    // Add live price to last user message
-    const enriched = (messages || []).map((m, i) => {
-      if (i === messages.length - 1 && m.role === 'user') {
-        return { ...m, content: m.content + priceContext };
-      }
-      return m;
+      const apiReq = https.request(options, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => resolve({ status: apiRes.statusCode, body: data }));
+      });
+
+      apiReq.on('error', reject);
+      apiReq.write(payload);
+      apiReq.end();
     });
 
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${deepseekKey}`,
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        max_tokens: 900,
-        messages: enriched,
-      }),
-    });
+    const data = JSON.parse(response.body);
 
-    const data = await response.json();
-
-    if (!response.ok) {
+    if (response.status !== 200) {
       return res.status(response.status).json({
-        error: `DeepSeek API error: ${data.error?.message || response.status}`
+        error: `DeepSeek error: ${data.error?.message || response.status}`
       });
     }
 
     const text = data.choices?.[0]?.message?.content || '';
-
-    // Return in the format the frontend expects
     return res.status(200).json({
       content: [{ type: 'text', text }]
     });
@@ -80,4 +70,15 @@ export default async function handler(req, res) {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
-}
+};
+```
+
+Click **Commit changes**.
+
+---
+
+## Then Redeploy
+
+Vercel → **Deployments** → **"..."** → **Redeploy** → wait 30 seconds → test again:
+```
+https://nzr-platform.vercel.app/api/quote?symbol=AAPL
